@@ -4,10 +4,10 @@ import shutil
 from tempfile import TemporaryDirectory
 from glob import glob
 import time
-from mri_metadata_classification import MRIMetadataClassification
-from mri_sequence_classification import MRISequenceClassification
-from classifier.mri_classification.brain_gd_classification import BrainGdClassification
-from classifier.mri_classification.mri_brain_roi_classification import MRIBrainRoiClassification
+from dcm_router.classifier.mri_classification.mri_metadata_classification import MRIMetadataClassification
+from dcm_router.classifier.mri_classification.mri_sequence_classification import MRISequenceClassification
+from dcm_router.classifier.mri_classification.brain_gd_classification import BrainGdClassification
+from dcm_router.classifier.mri_classification.mri_brain_roi_classification import MRIBrainRoiClassification
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -131,10 +131,10 @@ if __name__ == '__main__':
     plt.close()
 
     
-def f():
-    filtered_dicom = dc.filter(dicoms)
-    #
-    t1gd = nc.filter(nifti,seg_dir)
+# def f():
+#     filtered_dicom = dc.filter(dicoms)
+#     #
+#     t1gd = nc.filter(nifti,seg_dir)
 
 
 
