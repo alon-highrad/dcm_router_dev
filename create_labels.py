@@ -59,44 +59,37 @@ def filter_series(labels, min_size_mb=2, min_slices=10, min_resolution_mm=(1.5, 
     print(f"Series with label 1 filtered: {label_1_filtered}")
     return filtered_labels
 
-if __name__ == '__main__':
-
-    # all_labels = {}
-    # NIFTI_DB_PATH = "/media/alon/My Passport/hadassah_brain_nifti_files/"
-    # studies = os.listdir(NIFTI_DB_PATH)
-    # for study in studies:
-    #     study_name = os.path.basename(study)
-    #     non_gd_files = glob(NIFTI_DB_PATH + study + "/*.nii.gz")
-    #     gd_files = glob(NIFTI_DB_PATH + study + "/T1_GD/*.nii.gz")
-    #     if len(gd_files) == 0:
-    #         continue
-        
-    #     all_labels[study_name] = {}
-    #     for f in gd_files:
-    #         all_labels[study_name][f] = 1
-    #     for f in non_gd_files:
-    #         all_labels[study_name][f] = 0
-
-    # all_labels = filter_series(all_labels)
-
-    # with open('alon_labels_filtered.json', 'w') as f:
-    #     json.dump(all_labels, f)
-
+def process_dataset(nifti_db_path, label_criteria, output_file):
     all_labels = {}
-    NIFTI_DB_PATH = "/media/alon/My Passport/NBIA_brain_nifti_files/"
-    studies = os.listdir(NIFTI_DB_PATH)
+    studies = os.listdir(nifti_db_path)
+    
+    
     for study in studies:
         study_name = os.path.basename(study)
         all_labels[study_name] = {}
-        for f in glob(NIFTI_DB_PATH + '/' + study_name + "/*.nii.gz"):
-            if "T2" in os.path.basename(f):
-                continue
-            if 'stealth' in os.path.basename(f) or 'STEALTH' in os.path.basename(f):
+        for f in glob(nifti_db_path + '/' + study_name + "/**/*.nii.gz", recursive=True):  # Updated line
+            f = os.path.normpath(f)
+            if label_criteria(f):
                 all_labels[study_name][f] = 1
             else:
                 all_labels[study_name][f] = 0
 
     all_labels = filter_series(all_labels)
 
-    with open('oo_test_labels_filtered.json', 'w') as f:
+    with open(output_file, 'w') as f:
         json.dump(all_labels, f)
+
+if __name__ == '__main__':
+    # Process Hadassah dataset
+    process_dataset(
+        "/media/alon/My Passport/hadassah_brain_nifti_files_with_gd_gt/",
+        lambda f: "T1_GD" in f,
+        'hadassah_dataset.json'
+    )
+
+    # Process NBIA dataset
+    process_dataset(
+        "/media/alon/My Passport/NBIA_brain_nifti_files/",
+        lambda f: 'stealth' in os.path.basename(f).lower(),
+        'english_dataset.json'
+    )

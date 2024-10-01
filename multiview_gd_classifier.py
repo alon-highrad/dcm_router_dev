@@ -3,7 +3,6 @@ import os
 import torch
 import numpy as np
 import nibabel as nib
-from torchviz import make_dot
 import json
 from torchvision import transforms
 from sklearn.model_selection import KFold
@@ -14,8 +13,35 @@ from tools import plot_precision_recall_curve, plot_roc_curve
 import torch
 import torch.nn as nn
 from torchvision.models import efficientnet_b0
+import onnx
+import onnxruntime
+from dcm_router.classifier.mri_classification.brain_gd_classification import preprocess_series
+from dcm_router.classifier.mri_classification.mri_brain_roi_classification import get_brain_segmentation
 
 torch.manual_seed(42)
+
+def save_preprocessed_dataset(path_to_json):
+    # Load the JSON file created by create_labels.py
+    with open(path_to_json, 'r') as f:
+        dataset = json.load(f)
+    
+    # Create MIP images for every series specified in the JSON file
+    for study, series in dataset.items():
+        for file_path in series.keys():
+            if os.path.exists(file_path):
+                print(f"Processing: {file_path}")
+                image_nifti = nib.load(file_path)
+                image_data = image_nifti.get_fdata()
+                brain_mask_nif = get_brain_segmentation(image_nifti, device="gpu")
+                mask_data = brain_mask_nif.get_fdata()
+                mip_list = preprocess_series(image_data, mask_data)
+                
+                for plane,mip in zip(('sagittal', 'coronal', 'axial'), mip_list):
+                    res_path = file_path.replace('.nii.gz', '_' + plane + '_mip.nii.gz')
+                    nib.save(nib.Nifti1Image(mip.numpy(), image_nifti.affine), res_path)
+                    torch.save(mip, res_path.replace('.nii.gz', '.pt'))
+            else:
+                print(f"File not found: {file_path}")
 
 class BrainMRIDataset(Dataset):
     def __init__(self, data_dict, transform=None):
@@ -24,18 +50,13 @@ class BrainMRIDataset(Dataset):
         self.transform = transform
         for _, series in data_dict.items():
             for file_path, label in series.items():
-                sagittal_path = file_path[:-7] + '_resampled_sagital_mip.nii.gz'
-                coronal_path = file_path[:-7] + '_resampled_coronal_mip.nii.gz'
-                axial_path = file_path[:-7] + '_resampled_axial_mip.nii.gz'
-                
+                sagittal_path = file_path.replace('.nii.gz', '_sagittal_mip.pt')
+                coronal_path = file_path.replace('.nii.gz', '_coronal_mip.pt')
+                axial_path = file_path.replace('.nii.gz', '_axial_mip.pt')
                 if os.path.exists(sagittal_path) and os.path.exists(coronal_path) and os.path.exists(axial_path):
-                    sag_nif = nib.load(sagittal_path)
-                    sag_data = sag_nif.get_fdata()
-                    if not np.any(sag_data>0):
-                        print(f"No brain mask found for {file_path}")
-                        continue
-                    self.mip_paths.append((sagittal_path, coronal_path, axial_path))
-                    self.labels.append(label)
+                    if not torch.any(torch.isnan(torch.load(sagittal_path))):
+                        self.mip_paths.append((sagittal_path, coronal_path, axial_path))
+                        self.labels.append(label)
     
     def __len__(self):
         return len(self.labels)
@@ -45,24 +66,7 @@ class BrainMRIDataset(Dataset):
     
     def __getitem__(self, idx):
         mip_paths = self.mip_paths[idx]
-        imgs = []
-        for mip_path in mip_paths:
-            nifti_file = nib.load(mip_path)
-            img = nifti_file.get_fdata().astype(np.float32)
-            img = torch.FloatTensor(img)
-            img = img.unsqueeze(0)
-            img = (img - img.min()) / (img.max() - img.min())
-            if self.transform and self.train:                
-                img = self.transform(img)
-
-            imgs.append(img)
-        
-        sagittal = imgs[0]
-        coronal = imgs[1]
-        axial = imgs[2]
-
-        return sagittal, coronal, axial, self.labels[idx]
-
+        return torch.load(mip_paths[0]), torch.load(mip_paths[1]), torch.load(mip_paths[2]), self.labels[idx]
 
 
 class HalvedEfficientNet(nn.Module):
@@ -90,7 +94,7 @@ class MultiViewEfficientNet(nn.Module):
         
         # Get the output channels of the halved EfficientNet
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, 224, 224)
+            dummy_input = torch.randn(1, 3, 128, 128)
             output_channels = self.sagittal_net(dummy_input).shape[1]
         
         # Second half of EfficientNet
@@ -177,9 +181,11 @@ def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_ra
             
             for sagittal, coronal, axial, labels in train_loader:
                 sagittal, coronal, axial, labels = sagittal.to(device), coronal.to(device), axial.to(device), labels.float().to(device)
-                
                 optimizer.zero_grad()
                 outputs = model(sagittal, coronal, axial)
+                # for p in mip_paths[0]:
+                #     print(p)
+                # print(outputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -347,20 +353,69 @@ def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_ra
     
     print(f"Final Test AP: {test_ap:.4f}, Final Test AUC: {test_auc:.4f}")
 
-def main():
+def save_model_as_onnx(model_path, onnx_path):
+    # Load the saved PyTorch model
+    model = MultiViewEfficientNet()
+    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    model.eval()
+
+    # Create dummy input tensors
+    dummy_sagittal = torch.randn(1, 1, 128, 128)
+    dummy_coronal = torch.randn(1, 1, 128, 128)
+    dummy_axial = torch.randn(1, 1, 128, 128)
+
+    # Export the model to ONNX
+    torch.onnx.export(model,
+                      (dummy_sagittal, dummy_coronal, dummy_axial),
+                      onnx_path,
+                      export_params=True,
+                      opset_version=11,
+                      do_constant_folding=True,
+                      input_names=['sagittal', 'coronal', 'axial'],
+                      output_names=['output'],
+                      dynamic_axes={'sagittal': {0: 'batch_size'},
+                                    'coronal': {0: 'batch_size'},
+                                    'axial': {0: 'batch_size'},
+                                    'output': {0: 'batch_size'}})
+
+    print(f"Model saved as ONNX: {onnx_path}")
+
+    # Verify the ONNX model
+    onnx_model = onnx.load(onnx_path)
+    onnx.checker.check_model(onnx_model)
+    print("ONNX model checked successfully")
+
+    # Test the ONNX model with ONNX Runtime
+    ort_session = onnxruntime.InferenceSession(onnx_path)
+
+    ort_inputs = {
+        'sagittal': dummy_sagittal.numpy(),
+        'coronal': dummy_coronal.numpy(),
+        'axial': dummy_axial.numpy()
+    }
+    ort_output = ort_session.run(None, ort_inputs)
+    print("ONNX model inference test passed")
+
+def main(overwrite_preprocessed_data=False):
+
+    # Create preprocessed dataset
+    if overwrite_preprocessed_data:
+        save_preprocessed_dataset('hadassah_dataset.json')
+        save_preprocessed_dataset('english_dataset.json')
+
     # Create results directory if it doesn't exist
     res_dir = 'multi_efficientnet_results'
     os.makedirs(res_dir, exist_ok=True)
 
-    # Load data
-    with open('alon_labels_filtered.json', 'r') as f:
-        alon_labels = json.load(f)
-    with open('oo_test_labels_filtered.json', 'r') as f:
-        oo_test_labels = json.load(f)
+    # # Load data
+    with open('hadassah_dataset.json', 'r') as f:
+        hadassah_dataset = json.load(f)
+    with open('english_dataset.json', 'r') as f:
+        english_dataset = json.load(f)
 
     # Set up device
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
+    device = torch.device('cpu')
     print(f"Using device: {device}")
 
     # Training parameters
@@ -369,11 +424,17 @@ def main():
     learning_rate = 0.0001
     weight_decay = 1e-4
 
-    train_dataset = BrainMRIDataset(alon_labels, transform=None)
-    test_dataset = BrainMRIDataset(oo_test_labels, transform=None)
+    train_dataset = BrainMRIDataset(hadassah_dataset, transform=None)
+    test_dataset = BrainMRIDataset(english_dataset, transform=None)
+    print(len(train_dataset))
 
+    # # Train the model
     train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_rate, weight_decay, device, res_dir)
 
+    # Save the model as ONNX
+    pytorch_model_path = os.path.join(res_dir, 'final_multiview_model.pth')
+    onnx_model_path = os.path.join(res_dir, 'final_multiview_model.onnx')
+    save_model_as_onnx(pytorch_model_path, onnx_model_path)
 
 if __name__ == '__main__':
-    main()
+    main(overwrite_preprocessed_data=False)
