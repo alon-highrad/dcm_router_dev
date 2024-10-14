@@ -13,13 +13,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from converter import get_converter, ImageConverter
+from dcm_router.dcm_router_api import classify_brain_dcm, classify_brain_nifti
+
 
 if __name__ == '__main__':
 
-    metadata_classifier = MRIMetadataClassification()
-    sequence_classifier = MRISequenceClassification()
-    brain_roi_classifier = MRIBrainRoiClassification()
-    brain_gd_classifier = BrainGdClassification()
     converter: ImageConverter = get_converter('icasbr')
 
     log_folder_path = 'log'
@@ -49,45 +47,21 @@ if __name__ == '__main__':
 
             start_time = time.time()
 
-            metadata_classifier.set_files(dcm_files)
-            metadata_classifier_res = metadata_classifier.execute()
-            metadata_classifier_res.log_results(log_file_path)
+            filtered_files = classify_brain_dcm(dcm_files, log_file_path)
 
-            sequence_classifier.set_files(metadata_classifier_res.get_filtered_filenames([metadata_classifier.PASSED]))
-            sequence_classifier_res = sequence_classifier.execute()
-            sequence_classifier_res.log_results(log_file_path)
-
-            # prepare the filtered file names. try t1w ax. If that does not exist, try any t1w. if that does not exists try (INVALID, INVALID).
-            filtered_files = sequence_classifier_res.get_filtered_filenames([('t1w', 'ax')])
             if not filtered_files:
                 studies_with_no_t1w_ax.append(patient + '_' + study)
-                filtered_files = sequence_classifier_res.get_filtered_filenames([('t1w', 'sag')])
-                filtered_files.extend(sequence_classifier_res.get_filtered_filenames([('t1w', 'cor')]))
-            if not filtered_files:
-                filtered_files = sequence_classifier_res.get_filtered_filenames([('INVALID', 'INVALID')])
-
 
             with TemporaryDirectory() as nif_tmp_dir:
                 converter.convert(filtered_files, nif_tmp_dir)
                 nifti_files = glob(nif_tmp_dir + '/*.nii*')
                 t1w_ax_histogram[len(nifti_files)] = t1w_ax_histogram.get(len(nifti_files), 0) + 1
 
-                # filter by brain roi
-                brain_roi_classifier.set_files(nifti_files)
-                brain_roi_classifier_res = brain_roi_classifier.execute()
-                brain_roi_classifier_res.log_results(log_file_path)
-                filtered_files = brain_roi_classifier_res.get_filtered_filenames([brain_roi_classifier.PASSED])
+                pred_list = classify_brain_nifti(nifti_files, log_file_path)
 
-                # filter by gd
-                brain_gd_classifier.set_files(filtered_files)
-                brain_gd_classifier_res = brain_gd_classifier.execute()
-                brain_gd_classifier_res.log_results(log_file_path)
-            
-            pred_list = brain_gd_classifier_res.get_filtered_filenames([brain_gd_classifier.PASSED])
             if not pred_list:
                 failed_gd_test.append(patient + '_' + study)
-                continue
-            else:   
+            else:      
                 # list the files in the GT folder, sorted by their size
                 gt_files = os.listdir(os.path.join(study_folder, 'GT'))
                 gt_files.sort(key=lambda x: os.path.getsize(os.path.join(study_folder, 'GT', x)))
