@@ -104,11 +104,6 @@ if __name__ == '__main__':
     plt.savefig(os.path.join(log_folder_path, 't1w_ax_histogram.png'))
     plt.close()
 
-    
-# def f():
-#     filtered_dicom = dc.filter(dicoms)
-#     #
-#     t1gd = nc.filter(nifti,seg_dir)
 
 
 
