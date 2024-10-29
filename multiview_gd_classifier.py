@@ -4,7 +4,6 @@ import torch
 import numpy as np
 import nibabel as nib
 import json
-from torchvision import transforms
 from sklearn.model_selection import KFold
 from torch.optim import Adam
 from torch.nn import BCELoss
@@ -44,10 +43,9 @@ def save_preprocessed_dataset(path_to_json):
                 print(f"File not found: {file_path}")
 
 class BrainMRIDataset(Dataset):
-    def __init__(self, data_dict, transform=None):
+    def __init__(self, data_dict):
         self.mip_paths = []
         self.labels = []
-        self.transform = transform
         for _, series in data_dict.items():
             for file_path, label in series.items():
                 sagittal_path = file_path.replace('.nii.gz', '_sagittal_mip.pt')
@@ -60,9 +58,6 @@ class BrainMRIDataset(Dataset):
     
     def __len__(self):
         return len(self.labels)
-    
-    def set_train(self, train=True):
-        self.train = train
     
     def __getitem__(self, idx):
         mip_paths = self.mip_paths[idx]
@@ -135,17 +130,6 @@ class MultiViewEfficientNet(nn.Module):
         
         return output.squeeze()
 
-def get_train_transform():
-    return transforms.Compose([
-        transforms.RandomAffine(degrees=40, translate=(0.5, 0.5)),
-        transforms.RandomAutocontrast(),
-        transforms.RandomResizedCrop(128, scale=(0.5, 1.5), ratio=(0.5, 1.5)),
-        # random blur:
-        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5),  
-        transforms.RandomAdjustSharpness(sharpness_factor=3, p=0.5),
-
-    ])
-
 def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_rate, weight_decay, device, res_dir):
     
     # 5-fold cross-validation
@@ -174,7 +158,6 @@ def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_ra
         
         for epoch in range(num_epochs):
             model.train()
-            train_dataset.set_train(train=True)
             train_loss = 0
             train_correct = 0
             train_total = 0
@@ -206,7 +189,6 @@ def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_ra
             val_labels = []
             
             with torch.no_grad():
-                train_dataset.set_train(train=False)
                 model.eval()
                 for sagittal, coronal, axial, labels in val_loader:
                     sagittal, coronal, axial, labels = sagittal.to(device), coronal.to(device), axial.to(device), labels.float().to(device)
@@ -301,7 +283,6 @@ def train_model(train_dataset, test_dataset, num_epochs, batch_size, learning_ra
 
     for epoch in range(num_epochs):
         model.train()
-        train_dataset.set_train(train=True)
         train_loss = 0
         train_correct = 0
         train_total = 0
@@ -424,8 +405,8 @@ def main(overwrite_preprocessed_data=False):
     learning_rate = 0.0001
     weight_decay = 1e-4
 
-    train_dataset = BrainMRIDataset(hadassah_dataset, transform=None)
-    test_dataset = BrainMRIDataset(english_dataset, transform=None)
+    train_dataset = BrainMRIDataset(hadassah_dataset)
+    test_dataset = BrainMRIDataset(english_dataset)
     print(len(train_dataset))
 
     # # Train the model
